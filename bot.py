@@ -4,121 +4,71 @@ import os
 from flask import Flask, request
 from telebot import types
 
-# ---------------------------------------------------------
-# CONFIGURATION
-# ---------------------------------------------------------
-# 1. Paste your BotFather token inside the quotes below:
-API_TOKEN = "8291407561:AAFQ21G9g16RiO8jSoD0GmDO7AbIQbZxK-4"
-
-# 2. We get the URL automatically from Render
-WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') 
-if not WEBHOOK_URL:
-    WEBHOOK_URL = "http://localhost:5000" # Fallback for testing
+# --- SETUP ---
+# MAKE SURE YOUR REAL TOKEN IS HERE
+API_TOKEN = "8240002422:AAEbpCsYuRzN4JK5WaMdakfmUoBjfwCbRoo"
 
 bot = telebot.TeleBot(API_TOKEN)
 server = Flask(__name__)
 BASE_URL = "https://www.1secmail.com/api/v1/"
 user_data = {}
 
-# ---------------------------------------------------------
-# EMAIL LOGIC
-# ---------------------------------------------------------
-
+# --- EMAIL LOGIC ---
 def get_random_email():
     try:
-        # verify=False helps avoid SSL errors on some servers
         response = requests.get(f"{BASE_URL}?action=genRandomMailbox&count=1", verify=False)
-        return response.json()[0] if response.status_code == 200 else None
-    except:
-        return None
+        return response.json()[0]
+    except: return None
 
 def check_email(login, domain):
     try:
         response = requests.get(f"{BASE_URL}?action=getMessages&login={login}&domain={domain}", verify=False)
-        return response.json() if response.status_code == 200 else []
-    except:
-        return []
+        return response.json()
+    except: return []
 
 def read_message(login, domain, message_id):
     try:
         response = requests.get(f"{BASE_URL}?action=readMessage&login={login}&domain={domain}&id={message_id}", verify=False)
-        return response.json() if response.status_code == 200 else None
-    except:
-        return None
+        return response.json()
+    except: return None
 
-# ---------------------------------------------------------
-# BOT COMMANDS
-# ---------------------------------------------------------
-
+# --- BOT COMMANDS ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("📧 Generate New Email", callback_data="generate_email"))
-    bot.send_message(message.chat.id, "<b>Temp Mail Bot is Ready!</b>\nHosted on Render.", parse_mode='HTML', reply_markup=markup)
+    bot.reply_to(message, "Temp Mail Bot is Online!", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     chat_id = call.message.chat.id
-    
     if call.data == "generate_email":
-        email_address = get_random_email()
-        if email_address:
-            login, domain = email_address.split('@')
+        email = get_random_email()
+        if email:
+            login, domain = email.split('@')
             user_data[chat_id] = {'login': login, 'domain': domain}
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔄 Check Inbox", callback_data="check_inbox"),
-                       types.InlineKeyboardButton("📧 New Address", callback_data="generate_email"))
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id,
-                text=f"<b>Email:</b> <code>{email_address}</code>", parse_mode='HTML', reply_markup=markup)
-        else:
-            bot.answer_callback_query(call.id, "API Error. Try again.")
-
+            markup.add(types.InlineKeyboardButton("🔄 Check Inbox", callback_data="check_inbox"))
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=f"Email: {email}", reply_markup=markup)
+    
     elif call.data == "check_inbox":
-        if chat_id not in user_data:
-            bot.answer_callback_query(call.id, "Generate a new email first.")
-            return
-        login, domain = user_data[chat_id]['login'], user_data[chat_id]['domain']
-        messages = check_email(login, domain)
-        
-        if not messages:
-            bot.answer_callback_query(call.id, "Inbox is empty.", show_alert=True)
-        else:
-            markup = types.InlineKeyboardMarkup()
-            for msg in messages:
-                markup.add(types.InlineKeyboardButton(f"📩 {msg['subject'][:15]}...", callback_data=f"read_{msg['id']}"))
-            markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="check_inbox"),
-                       types.InlineKeyboardButton("📧 New Email", callback_data="generate_email"))
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id,
-                text=f"Inbox for {login}@{domain}: {len(messages)} msgs", parse_mode='HTML', reply_markup=markup)
+        if chat_id in user_data:
+            msgs = check_email(user_data[chat_id]['login'], user_data[chat_id]['domain'])
+            if not msgs: bot.answer_callback_query(call.id, "Inbox empty", show_alert=True)
+            else: bot.send_message(chat_id, f"Found {len(msgs)} emails.")
 
-    elif call.data.startswith("read_"):
-        if chat_id not in user_data: return
-        msg_id = call.data.split("_")[1]
-        login, domain = user_data[chat_id]['login'], user_data[chat_id]['domain']
-        full_msg = read_message(login, domain, msg_id)
-        if full_msg:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="check_inbox"))
-            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id,
-                text=f"From: {full_msg['from']}\nSub: {full_msg['subject']}\n\n{full_msg.get('textBody', 'No text')[:3000]}", 
-                parse_mode='HTML', reply_markup=markup)
-
-# ---------------------------------------------------------
-# SERVER & WEBHOOK
-# ---------------------------------------------------------
-
-@server.route('/' + API_TOKEN, methods=['POST'])
-def getMessage():
+# --- SIMPLIFIED SERVER ---
+# This accepts traffic sent to ANY url path, fixing the 404 error
+@server.route('/<path:path>', methods=['POST'])
+def getMessage(path):
     json_string = request.get_data().decode('utf-8')
     update = telebot.types.Update.de_json(json_string)
     bot.process_new_updates([update])
     return "!", 200
 
+# Root page check
 @server.route("/")
 def webhook():
-    bot.remove_webhook()
-    # This sets the webhook to the current Render URL
-    bot.set_webhook(url=WEBHOOK_URL + "/" + API_TOKEN)
     return "Bot is running!", 200
 
 if __name__ == "__main__":
